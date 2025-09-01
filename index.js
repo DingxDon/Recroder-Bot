@@ -46,6 +46,7 @@ async function getPage(browser, url) {
 
   return page;
 }
+
 async function isLoggedIn(page) {
   const cookies = await page.cookies();
   const loggedIn = cookies.some(
@@ -71,30 +72,43 @@ async function loginUser(page) {
 }
 
 async function joinMeet(page, username = "Recorder") {
-  const nameInput = await page.locator('input[type="text"]', { timeout: 5000 });
-  await nameInput.fill(username);
-
-  let joinButton = page.locator("span.UywwFc-vQzf8d", {
-    timeout: 5000,
-  });
-  if (joinButton) {
+  //   const nameInput = await page.waitForSelector('input[type="text"]', {
+  //     visible: true,
+  //   });
+  //   await nameInput.type(username);
+  try {
+    let joinButton = page.locator("span.UywwFc-vQzf8d", {
+      timeout: 5000,
+    });
     await joinButton.click();
     console.log("Joined Meet");
-  } else {
-    console.log("Could not join meet!");
+  } catch {
+    console.log("Could not find join button!");
   }
 }
 
-const main = async () => {
+const main = async (id) => {
   const browser = await createBrowser({ url: baseUrl });
 
   const loginPage = await getPage(browser, loginUrl);
   if (!(await isLoggedIn(loginPage))) {
-    await loginPage(loginPage);
+    await loginUser(loginPage);
   }
-  // const page = await getPage(browser, `${baseUrl}/fzj-qtha-rvg`);
-  // await delay(5000);
-  // await joinMeet(page, "Recorder");
+  const page = await getPage(browser, `${baseUrl}/${id}`);
+  await joinMeet(page, "Recorder");
 };
 
-main();
+app.post("/join-meet", async (req, res) => {
+  const { id } = req.body;
+  if (!id) return res.status(400).json({ error: "Invalid Params" });
+
+  try {
+    await main(id);
+    res.status(200).json("ok");
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "failed" });
+  }
+});
+
+app.listen(8080, () => console.log("Server Started on port 8080"));
