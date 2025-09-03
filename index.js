@@ -1,8 +1,9 @@
 import express from "express";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
-import { launch } from "puppeteer-stream";
+import { getStream, launch } from "puppeteer-stream";
 import path from "path";
+import fs from "fs";
 import {
   defaultArgs,
   overridePermissions,
@@ -20,10 +21,11 @@ stealth.enabledEvasions.delete("iframe.contentWindow");
 stealth.enabledEvasions.delete("media.codecs");
 puppeteer.use(stealth);
 
+let browser = null;
+
 async function createBrowser({ url }) {
-  const browser = await launch(puppeteer, {
+  browser = await launch(puppeteer, {
     headless: false,
-    slowMo: 50,
     defaultViewport: null,
     executablePath: "/usr/bin/google-chrome",
     args: defaultArgs,
@@ -36,7 +38,7 @@ async function createBrowser({ url }) {
   return browser;
 }
 
-async function getPage(browser, url) {
+async function getPage(url) {
   const page = await browser.newPage();
 
   await page.setUserAgent(defaultUserAgent);
@@ -71,39 +73,69 @@ async function loginUser(page) {
   }
 }
 
-async function joinMeet(page, username = "Recorder") {
-  //   const nameInput = await page.waitForSelector('input[type="text"]', {
-  //     visible: true,
-  //   });
-  //   await nameInput.type(username);
+async function joinMeet(page, recoding, username = "Recorder") {
   try {
-    let joinButton = page.locator("span.UywwFc-vQzf8d", {
+    const joinButton = page.locator("span.UywwFc-vQzf8d", {
       timeout: 5000,
     });
     await joinButton.click();
-    console.log("Joined Meet");
+    console.log("join button Clicked");
+    getRecorder(page, recoding);
   } catch {
-    console.log("Could not find join button!");
+    console.log("can't find join button!");
   }
 }
 
-const main = async (id) => {
-  const browser = await createBrowser({ url: baseUrl });
+async function getRecorder(
+  page,
+  params = { audio: true, video: true, fileType: ".mp4" }
+) {
+  const stream = await getStream(page, {
+    audio: params.audio,
+    video: params.video,
+  });
 
-  const loginPage = await getPage(browser, loginUrl);
-  if (!(await isLoggedIn(loginPage))) {
-    await loginUser(loginPage);
+  const path = path.join(__dirname, `${Date.now()}${params.fileType}`);
+  const file = fs.createWriteStream(path);
+
+  stream.pipe(file);
+
+  console.log(`Recording saved at: ${path}`);
+  return path;
+}
+
+const main = async (id, recoding) => {
+  await createBrowser({ url: baseUrl });
+  const page = await getPage(`${baseUrl}/${id}`);
+
+  if (!(await isLoggedIn(page))) {
+    await page.goto(loginUrl, { waitUntil: "networkidle2" });
+    await loginUser(page);
+    await page.goto(`${baseUrl}/${id}`, { waitUntil: "networkidle2" });
   }
-  const page = await getPage(browser, `${baseUrl}/${id}`);
-  await joinMeet(page, "Recorder");
+
+  await joinMeet(page, recoding, "Recorder");
 };
 
-app.post("/join-meet", async (req, res) => {
+app.post("/join", async (req, res) => {
+  const { id, recoding } = req.body;
+  if (!id) return res.status(400).json({ error: "Invalid Params" });
+
+  try {
+    await main(id, recoding);
+    res.status(200).json("ok");
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "failed" });
+  }
+});
+
+app.post("/stop", async (req, res) => {
   const { id } = req.body;
   if (!id) return res.status(400).json({ error: "Invalid Params" });
 
   try {
-    await main(id);
+    browser.close();
     res.status(200).json("ok");
   } catch (e) {
     console.error(e);
