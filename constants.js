@@ -8,6 +8,7 @@ export const defaultArgs = [
   "--start-maximized",
   "--no-sandbox",
   "--disable-setuid-sandbox",
+  ,
 ];
 
 export const overridePermissions = ["microphone", "camera", "notifications"];

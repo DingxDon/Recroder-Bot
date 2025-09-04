@@ -22,6 +22,39 @@ stealth.enabledEvasions.delete("media.codecs");
 puppeteer.use(stealth);
 
 let browser = null;
+let end = false;
+
+// function createMeeting(payload) {
+//   return {
+//     id: payload.id,
+//     isRecording: {
+//       audio: payload.isRecording?.audio ?? false,
+//       video: payload.isRecording?.video ?? false,
+//     },
+//     isStopped: payload.isStopped ?? false,
+//   };
+// }
+
+// let meetings = [];
+
+// async function RecordingManager(meetingObj, remove = false) {
+//   const { id } = meetingObj;
+//   let meeting = meetings.find((m) => m.id === id);
+
+//   if (remove) {
+//     if (meeting) {
+//       meeting.isStopped = true;
+//     }
+//   } else {
+//     if (!meeting) {
+//       meetings.push(createMeeting(meetingObj));
+//     } else {
+//       meeting.isStopped = false;
+//     }
+//   }
+
+//   return meetings;
+// }
 
 async function createBrowser({ url }) {
   browser = await launch(puppeteer, {
@@ -75,7 +108,7 @@ async function loginUser(page) {
 
 async function joinMeet(page, recoding, username = "Recorder") {
   try {
-    const joinButton = page.locator("span.UywwFc-vQzf8d", {
+    const joinButton = page.locator("span.UywwFc-RLmnJb", {
       timeout: 5000,
     });
     await joinButton.click();
@@ -94,20 +127,27 @@ async function getRecorder(
     audio: params.audio,
     video: params.video,
   });
+  console.log("recorder Started");
+  if (!end) {
+    const filePath = path.join(__dirname, `${Date.now()}${params.fileType}`);
+    const file = fs.createWriteStream(filePath);
 
-  const path = path.join(__dirname, `${Date.now()}${params.fileType}`);
-  const file = fs.createWriteStream(path);
+    stream.pipe(file);
 
-  stream.pipe(file);
-
-  console.log(`Recording saved at: ${path}`);
-  return path;
+    console.log(`Recording saved at: ${filePath}`);
+    return filePath;
+  } else {
+    stream.end();
+    console.log("recorder Stopped");
+  }
 }
 
 const main = async (id, recoding) => {
-  await createBrowser({ url: baseUrl });
+  if (!browser) await createBrowser({ url: baseUrl });
+
   const page = await getPage(`${baseUrl}/${id}`);
 
+  if (id && end) page.close();
   if (!(await isLoggedIn(page))) {
     await page.goto(loginUrl, { waitUntil: "networkidle2" });
     await loginUser(page);
@@ -130,11 +170,24 @@ app.post("/join", async (req, res) => {
   }
 });
 
-app.post("/stop", async (req, res) => {
-  const { id } = req.body;
-  if (!id) return res.status(400).json({ error: "Invalid Params" });
+app.get("/stop/:id", async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ error: "Id not Provided" });
 
   try {
+    end = true;
+    await main(id, false);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "failed" });
+  }
+});
+app.get("/stop-all", async (req, res) => {
+  if (!browser)
+    return res.status(400).json({ error: "No instance available to stop" });
+
+  try {
+    end = true;
     browser.close();
     res.status(200).json("ok");
   } catch (e) {
