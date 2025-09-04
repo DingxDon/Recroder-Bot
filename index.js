@@ -12,49 +12,51 @@ import {
   loginUrl,
   baseUrl,
 } from "./constants.js";
+
 const __dirname = path.resolve();
 const app = express();
 app.use(express.json());
 
 const stealth = StealthPlugin();
+stealth.enabledEvasions.delete("navigator.webdriver"); // Disable the problematic evasion
 stealth.enabledEvasions.delete("iframe.contentWindow");
 stealth.enabledEvasions.delete("media.codecs");
 puppeteer.use(stealth);
 
 let browser = null;
-let end = false;
+let meetings = [];
 
-// function createMeeting(payload) {
-//   return {
-//     id: payload.id,
-//     isRecording: {
-//       audio: payload.isRecording?.audio ?? false,
-//       video: payload.isRecording?.video ?? false,
-//     },
-//     isStopped: payload.isStopped ?? false,
-//   };
-// }
+async function createMeeting(payload) {
+  return {
+    id: payload.id,
+    isRecording: {
+      audio: payload.isRecording?.audio ?? false,
+      video: payload.isRecording?.video ?? false,
+    },
+    isStopped: payload.isStopped ?? false,
+    page: null,
+    stream: null,
+    filePath: null,
+  };
+}
 
-// let meetings = [];
+async function BotManager(obj, stop = false) {
+  const { id } = obj;
+  let meeting = meetings.find((m) => m.id === id);
 
-// async function RecordingManager(meetingObj, remove = false) {
-//   const { id } = meetingObj;
-//   let meeting = meetings.find((m) => m.id === id);
-
-//   if (remove) {
-//     if (meeting) {
-//       meeting.isStopped = true;
-//     }
-//   } else {
-//     if (!meeting) {
-//       meetings.push(createMeeting(meetingObj));
-//     } else {
-//       meeting.isStopped = false;
-//     }
-//   }
-
-//   return meetings;
-// }
+  if (stop && meeting) {
+    meeting.isStopped = true;
+    if (meeting.stream) meeting.stream.destroy();
+    if (meeting.page) await meeting.page.close();
+  } else if (!stop) {
+    if (!meeting) {
+      meetings.push(await createMeeting(obj));
+    } else {
+      meeting.isStopped = false;
+    }
+  }
+  return meetings;
+}
 
 async function createBrowser({ url }) {
   browser = await launch(puppeteer, {
@@ -106,16 +108,17 @@ async function loginUser(page) {
   }
 }
 
-async function joinMeet(page, recoding, username = "Recorder") {
+async function joinMeet(page, recording) {
   try {
     const joinButton = page.locator("span.UywwFc-RLmnJb", {
       timeout: 5000,
     });
     await joinButton.click();
     console.log("join button Clicked");
-    getRecorder(page, recoding);
+    return await getRecorder(page, recording);
   } catch {
     console.log("can't find join button!");
+    return null;
   }
 }
 
@@ -128,41 +131,52 @@ async function getRecorder(
     video: params.video,
   });
   console.log("recorder Started");
-  if (!end) {
-    const filePath = path.join(__dirname, `${Date.now()}${params.fileType}`);
-    const file = fs.createWriteStream(filePath);
 
-    stream.pipe(file);
+  const filePath = path.join(__dirname, `${Date.now()}${params.fileType}`);
+  const file = fs.createWriteStream(filePath);
 
-    console.log(`Recording saved at: ${filePath}`);
-    return filePath;
-  } else {
-    stream.end();
-    console.log("recorder Stopped");
-  }
+  stream.pipe(file);
+
+  console.log(`Recording saved at: ${filePath}`);
+  return { stream, filePath };
 }
 
-const main = async (id, recoding) => {
+const main = async (id, recording) => {
   if (!browser) await createBrowser({ url: baseUrl });
 
   const page = await getPage(`${baseUrl}/${id}`);
+  const meeting = meetings.find((m) => m.id === id);
+  if (meeting) {
+    meeting.page = page;
+  }
 
-  if (id && end) page.close();
+  if (meeting && meeting.isStopped) {
+    await page.close();
+    return;
+  }
+
   if (!(await isLoggedIn(page))) {
     await page.goto(loginUrl, { waitUntil: "networkidle2" });
     await loginUser(page);
     await page.goto(`${baseUrl}/${id}`, { waitUntil: "networkidle2" });
   }
 
-  await joinMeet(page, recoding, "Recorder");
+  const result = await joinMeet(page, recording);
+
+  if (meeting && result) {
+    meeting.stream = result.stream;
+    meeting.filePath = result.filePath;
+  }
+  return result;
 };
 
 app.post("/join", async (req, res) => {
-  const { id, recoding } = req.body;
+  const { id, isRecording } = req.body;
   if (!id) return res.status(400).json({ error: "Invalid Params" });
 
   try {
-    await main(id, recoding);
+    await BotManager(req.body);
+    await main(id, isRecording);
     res.status(200).json("ok");
   } catch (e) {
     console.error(e);
@@ -175,20 +189,24 @@ app.get("/stop/:id", async (req, res) => {
   if (!id) return res.status(400).json({ error: "Id not Provided" });
 
   try {
-    end = true;
-    await main(id, false);
+    await BotManager({ id }, true);
+    res.status(200).json("ok");
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "failed" });
   }
 });
+
 app.get("/stop-all", async (req, res) => {
   if (!browser)
     return res.status(400).json({ error: "No instance available to stop" });
 
   try {
-    end = true;
-    browser.close();
+    for (let meeting of meetings) {
+      await BotManager(meeting, true);
+    }
+    await browser.close();
+    browser = null;
     res.status(200).json("ok");
   } catch (e) {
     console.error(e);
