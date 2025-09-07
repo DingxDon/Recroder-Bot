@@ -1,3 +1,4 @@
+import dotenv from "dotenv";
 import express from "express";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
@@ -8,15 +9,19 @@ import {
   defaultArgs,
   overridePermissions,
   defaultUserAgent,
-  userConfig,
   loginUrl,
   baseUrl,
 } from "./constants.js";
+import { isLoggedIn, loginUser } from "./utils.js";
+import { BotManager, meetings } from "./botManager.js";
+dotenv.config();
+
 const __dirname = path.resolve();
 const app = express();
 app.use(express.json());
 
 const stealth = StealthPlugin();
+stealth.enabledEvasions.delete("navigator.webdriver");
 stealth.enabledEvasions.delete("iframe.contentWindow");
 stealth.enabledEvasions.delete("media.codecs");
 puppeteer.use(stealth);
@@ -27,7 +32,7 @@ async function createBrowser({ url }) {
   browser = await launch(puppeteer, {
     headless: false,
     defaultViewport: null,
-    executablePath: "/usr/bin/google-chrome",
+    executablePath: process.env.CHROME_PATH,
     args: defaultArgs,
     userDataDir: `${__dirname}/user`,
   });
@@ -49,64 +54,49 @@ async function getPage(url) {
   return page;
 }
 
-async function isLoggedIn(page) {
-  const cookies = await page.cookies();
-  const loggedIn = cookies.some(
-    (c) => c.domain.includes("google.com") && c.name === "SID"
-  );
-
-  console.log(loggedIn ? "already logged in." : "not logged in");
-
-  return loggedIn;
-}
-
-async function loginUser(page) {
-  const { email, password, typingDelay } = userConfig;
-
-  for (const step of [email, password]) {
-    await page.waitForSelector(step.selector, { visible: true });
-    await page.type(step.selector, step.value, { delay: typingDelay });
-    await Promise.all([
-      step.action(page),
-      page.waitForNavigation({ waitUntil: "networkidle2" }),
-    ]);
-  }
-}
-
-async function joinMeet(page, recoding, username = "Recorder") {
+async function joinMeet(page, recording) {
   try {
-    const joinButton = page.locator("span.UywwFc-vQzf8d", {
+    const joinButton = page.locator("span.UywwFc-RLmnJb", {
       timeout: 5000,
     });
     await joinButton.click();
     console.log("join button Clicked");
-    getRecorder(page, recoding);
+    return await getRecorder(page, recording);
   } catch {
     console.log("can't find join button!");
+    return null;
   }
 }
 
-async function getRecorder(
-  page,
-  params = { audio: true, video: true, fileType: ".mp4" }
-) {
+async function getRecorder(page, params = { audio: true, video: true }) {
   const stream = await getStream(page, {
     audio: params.audio,
     video: params.video,
   });
+  console.log("recorder Started");
 
-  const path = path.join(__dirname, `${Date.now()}${params.fileType}`);
-  const file = fs.createWriteStream(path);
+  const filePath = path.join(__dirname, "recordings", `${Date.now()}.mp4`);
+  const file = fs.createWriteStream(filePath);
 
   stream.pipe(file);
 
-  console.log(`Recording saved at: ${path}`);
-  return path;
+  console.log(`Recording saved at: ${filePath}`);
+  return { stream, filePath };
 }
 
-const main = async (id, recoding) => {
-  await createBrowser({ url: baseUrl });
+const main = async (id, recording) => {
+  if (!browser) await createBrowser({ url: baseUrl });
+
   const page = await getPage(`${baseUrl}/${id}`);
+  const meeting = meetings.find((m) => m.id === id);
+  if (meeting) {
+    meeting.page = page;
+  }
+
+  if (meeting && meeting.isStopped) {
+    await page.close();
+    return;
+  }
 
   if (!(await isLoggedIn(page))) {
     await page.goto(loginUrl, { waitUntil: "networkidle2" });
@@ -114,15 +104,22 @@ const main = async (id, recoding) => {
     await page.goto(`${baseUrl}/${id}`, { waitUntil: "networkidle2" });
   }
 
-  await joinMeet(page, recoding, "Recorder");
+  const result = await joinMeet(page, recording);
+
+  if (meeting && result) {
+    meeting.stream = result.stream;
+    meeting.filePath = result.filePath;
+  }
+  return result;
 };
 
 app.post("/join", async (req, res) => {
-  const { id, recoding } = req.body;
+  const { id, isRecording } = req.body;
   if (!id) return res.status(400).json({ error: "Invalid Params" });
 
   try {
-    await main(id, recoding);
+    await BotManager(req.body);
+    await main(id, isRecording);
     res.status(200).json("ok");
   } catch (e) {
     console.error(e);
@@ -130,12 +127,12 @@ app.post("/join", async (req, res) => {
   }
 });
 
-app.post("/stop", async (req, res) => {
-  const { id } = req.body;
-  if (!id) return res.status(400).json({ error: "Invalid Params" });
+app.get("/stop/:id", async (req, res) => {
+  const { id } = req.params;
+  if (!id) return res.status(400).json({ error: "Id not Provided" });
 
   try {
-    browser.close();
+    await BotManager({ id }, true);
     res.status(200).json("ok");
   } catch (e) {
     console.error(e);
@@ -143,4 +140,21 @@ app.post("/stop", async (req, res) => {
   }
 });
 
-app.listen(8080, () => console.log("Server Started on port 8080"));
+app.get("/stop-all", async (req, res) => {
+  if (!browser)
+    return res.status(401).json({ error: "no instance available to stop" });
+
+  try {
+    for (let meeting of meetings) {
+      await BotManager(meeting, true);
+    }
+    await browser.close();
+    browser = null;
+    res.status(200).json("ok");
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "failed" });
+  }
+});
+
+app.listen(process.env.PORT, () => console.log("Server Started on port 8080"));
