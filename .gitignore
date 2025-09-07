@@ -140,3 +140,5 @@ vite.config.ts.timestamp-*
 
 # user file
 user/
+
+recordings/
