@@ -138,7 +138,3 @@ Transcription result: { text: "Hello everyone, welcome to the meeting." }
 ## 📜 License
 
 MIT License © 2025
-
-👉 This README is **GitHub-ready**.
-
-Would you like me to also generate a **`Dockerfile` + `docker-compose.yml`** so the bot can run in a container with Chrome + ffmpeg preinstalled?
