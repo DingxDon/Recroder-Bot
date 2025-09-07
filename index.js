@@ -1,3 +1,4 @@
+import dotenv from "dotenv";
 import express from "express";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
@@ -13,6 +14,7 @@ import {
 } from "./constants.js";
 import { isLoggedIn, loginUser } from "./utils.js";
 import { BotManager, meetings } from "./botManager.js";
+dotenv.config();
 
 const __dirname = path.resolve();
 const app = express();
@@ -30,7 +32,7 @@ async function createBrowser({ url }) {
   browser = await launch(puppeteer, {
     headless: false,
     defaultViewport: null,
-    executablePath: "/usr/bin/google-chrome",
+    executablePath: process.env.CHROME_PATH,
     args: defaultArgs,
     userDataDir: `${__dirname}/user`,
   });
@@ -155,4 +157,4 @@ app.get("/stop-all", async (req, res) => {
   }
 });
 
-app.listen(8080, () => console.log("Server Started on port 8080"));
+app.listen(process.env.PORT, () => console.log("Server Started on port 8080"));
